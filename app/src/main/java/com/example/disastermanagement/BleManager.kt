@@ -99,6 +99,23 @@ class BleManager(private val context: Context) {
             return
         }
 
+        // Stop any advertisement already in flight first.
+        // Without this, switching between the idle presence
+        // beacon and a real SOS payload can fail with
+        // ADVERTISE_FAILED_ALREADY_STARTED.
+        try {
+
+            bleAdvertiser.stopAdvertising(
+                advertiseCallback
+            )
+
+        } catch (e: Exception) {
+
+            println(
+                "BLE: No previous advertisement to stop"
+            )
+        }
+
         bleAdvertiser.startAdvertising(
             settings,
             advertiseData,

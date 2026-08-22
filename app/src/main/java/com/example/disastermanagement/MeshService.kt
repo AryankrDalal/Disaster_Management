@@ -77,6 +77,38 @@ class MeshService : Service() {
 
             handlePacket(packet)
         }
+
+        // Broadcast a lightweight "I'm listening" presence
+        // beacon right away. Without this, this phone never
+        // transmits anything until it actually forwards a
+        // real SOS (which needs GPS first and only lasts 30
+        // seconds) - so a source phone's own scanner would
+        // have nothing to detect and never show a connection.
+        bleManager.advertise(
+            createBeaconPacket()
+        )
+    }
+
+    // --------------------------------------------------
+    // PRESENCE BEACON
+    // --------------------------------------------------
+
+    // messageId 0 is reserved to mean "presence beacon, not a
+    // real SOS" - it lets nearby phones see this device and
+    // its live RSSI at all times while mesh relay is running.
+    private fun createBeaconPacket(): SosPacket {
+
+        val myNodeId =
+            packetStore.getNodeId()
+
+        return SosPacket(
+            messageId = 0,
+            sourceId = myNodeId,
+            relayId = myNodeId,
+            sourceLatitude = 0f,
+            sourceLongitude = 0f,
+            ttl = 0
+        )
     }
 
     // --------------------------------------------------
@@ -122,6 +154,13 @@ class MeshService : Service() {
     private fun handlePacket(
         packet: SosPacket
     ) {
+
+        // Presence beacons already fed the signal display via
+        // handleSignalUpdate() above - they're not real SOS
+        // traffic and should never enter the relay/dedup logic.
+        if (packet.messageId == 0) {
+            return
+        }
 
         val myNodeId =
             packetStore.getNodeId()
@@ -488,7 +527,12 @@ class MeshService : Service() {
 
             delay(30_000)
 
-            bleManager.stopAdvertising()
+            // Resume the presence beacon rather than going
+            // silent, so this phone stays visible/live on
+            // nearby phones' signal panels between SOS events.
+            bleManager.advertise(
+                createBeaconPacket()
+            )
 
             updateNotification(
                 """

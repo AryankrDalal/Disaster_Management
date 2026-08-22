@@ -52,6 +52,11 @@ class MainActivity : ComponentActivity() {
     private val signalStrengths =
         linkedMapOf<Short, Int>()
 
+    // When true, incoming RSSI readings are ignored and the
+    // panel stays on "No nearby devices" until mesh relay or
+    // SOS sending is explicitly started again.
+    private var signalTrackingPaused = false
+
     private lateinit var signalText: TextView
 
     // --------------------------------------------------
@@ -269,7 +274,11 @@ class MainActivity : ComponentActivity() {
 
         relayButton.setOnClickListener {
 
+            signalTrackingPaused = false
+
             startMeshService()
+
+            startPassiveSignalScanning()
         }
 
         layout.addView(
@@ -287,6 +296,10 @@ class MainActivity : ComponentActivity() {
             "SEND SOS"
 
         sosButton.setOnClickListener {
+
+            signalTrackingPaused = false
+
+            startPassiveSignalScanning()
 
             sendSOS()
         }
@@ -321,6 +334,15 @@ class MainActivity : ComponentActivity() {
                 STATUS:
                 MESH STOPPED
                 """.trimIndent()
+
+            // Stop this phone's own passive scan too, and
+            // ignore any updates already in flight, so the
+            // panel stays cleared until explicitly restarted.
+            signalTrackingPaused = true
+
+            bleManager.stopScanning()
+
+            clearSignalDisplay()
         }
 
         layout.addView(
@@ -679,10 +701,22 @@ class MainActivity : ComponentActivity() {
     // SIGNAL STRENGTH DISPLAY
     // --------------------------------------------------
 
+    private fun clearSignalDisplay() {
+
+        signalStrengths.clear()
+
+        signalText.text =
+            "SIGNAL: No nearby devices"
+    }
+
     private fun updateSignalDisplay(
         nodeId: Short,
         rssi: Int
     ) {
+
+        if (signalTrackingPaused) {
+            return
+        }
 
         // Move this node to the front (most recently heard)
         signalStrengths.remove(nodeId)
