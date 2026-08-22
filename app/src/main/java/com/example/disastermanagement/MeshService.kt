@@ -28,13 +28,12 @@ class MeshService : Service() {
                     Dispatchers.Main
         )
 
-    // --------------------------------------------------
-    // LIVE SIGNAL STRENGTH
-    // --------------------------------------------------
-
-    // nodeId of transmitter -> last known RSSI (dBm)
     private val nodeSignalStrength =
         ConcurrentHashMap<Short, Int>()
+
+    // ==================================================
+    // SERVICE START
+    // ==================================================
 
     override fun onCreate() {
 
@@ -59,61 +58,66 @@ class MeshService : Service() {
         startMesh()
     }
 
-    // --------------------------------------------------
-    // START MESH
-    // --------------------------------------------------
+    // ==================================================
+    // START BLE SCANNING
+    // ==================================================
 
     private fun startMesh() {
 
         bleManager.startScanning { packet, rssi ->
 
-            // Signal strength updates on EVERY scan result,
-            // even for duplicate/already-seen packets, so the
-            // UI reflects live distance changes as phones move.
             handleSignalUpdate(
                 packet.relayId,
                 rssi
             )
 
-            handlePacket(packet)
+            handlePacket(
+                packet,
+                rssi
+            )
         }
 
-        // Broadcast a lightweight "I'm listening" presence
-        // beacon right away. Without this, this phone never
-        // transmits anything until it actually forwards a
-        // real SOS (which needs GPS first and only lasts 30
-        // seconds) - so a source phone's own scanner would
-        // have nothing to detect and never show a connection.
         bleManager.advertise(
             createBeaconPacket()
         )
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // PRESENCE BEACON
-    // --------------------------------------------------
+    // ==================================================
 
-    // messageId 0 is reserved to mean "presence beacon, not a
-    // real SOS" - it lets nearby phones see this device and
-    // its live RSSI at all times while mesh relay is running.
     private fun createBeaconPacket(): SosPacket {
 
         val myNodeId =
             packetStore.getNodeId()
 
         return SosPacket(
-            messageId = 0,
-            sourceId = myNodeId,
-            relayId = myNodeId,
-            sourceLatitude = 0f,
-            sourceLongitude = 0f,
-            ttl = 0
+            messageId =
+                0,
+
+            sourceId =
+                myNodeId,
+
+            relayId =
+                myNodeId,
+
+            sourceLatitude =
+                0f,
+
+            sourceLongitude =
+                0f,
+
+            ttl =
+                0,
+
+            sosType =
+                0
         )
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // HANDLE LIVE SIGNAL UPDATE
-    // --------------------------------------------------
+    // ==================================================
 
     private fun handleSignalUpdate(
         nodeId: Short,
@@ -147,17 +151,15 @@ class MeshService : Service() {
         )
     }
 
-    // --------------------------------------------------
-    // HANDLE RECEIVED SOS
-    // --------------------------------------------------
+    // ==================================================
+    // HANDLE RECEIVED PACKET
+    // ==================================================
 
     private fun handlePacket(
-        packet: SosPacket
+        packet: SosPacket,
+        rssi: Int
     ) {
 
-        // Presence beacons already fed the signal display via
-        // handleSignalUpdate() above - they're not real SOS
-        // traffic and should never enter the relay/dedup logic.
         if (packet.messageId == 0) {
             return
         }
@@ -165,9 +167,9 @@ class MeshService : Service() {
         val myNodeId =
             packetStore.getNodeId()
 
-        // ----------------------------------------------
-        // CHECK DUPLICATE
-        // ----------------------------------------------
+        // --------------------------------------------------
+        // IGNORE DUPLICATE
+        // --------------------------------------------------
 
         if (
             packetStore.hasSeen(
@@ -175,41 +177,55 @@ class MeshService : Service() {
             )
         ) {
 
-            println(
-                "MESH: Duplicate packet ignored: " +
-                        packet.messageId
-            )
-
             return
         }
 
-        // ----------------------------------------------
-        // MARK PACKET AS SEEN
-        // ----------------------------------------------
+        // --------------------------------------------------
+        // MARK AS SEEN
+        // --------------------------------------------------
 
         packetStore.markSeen(
             packet.messageId
         )
 
-        // ----------------------------------------------
-        // SHOW SOS ON PHONE UI
-        // ----------------------------------------------
+        val sosName =
+            SosPacket.getSosTypeName(
+                packet.sosType
+            )
+
+        // --------------------------------------------------
+        // SHOW SOS RECEIVED
+        // --------------------------------------------------
 
         sendSosToUI(
+
             """
             ╔══════════════════════════╗
                    🚨 SOS RECEIVED
             ╚══════════════════════════╝
             
+            SOS:
+            $sosName
+            
             MESSAGE ID:
             ${packet.messageId}
             
             SOURCE DEVICE:
-            ${nodeIdToString(packet.sourceId)}
+            ${
+                nodeIdToString(
+                    packet.sourceId
+                )
+            }
             
-            SOURCE GPS:
+            SOURCE LOCATION:
             ${packet.sourceLatitude},
             ${packet.sourceLongitude}
+            
+            RECEIVED VIA:
+            BLUETOOTH BLE
+
+            SIGNAL:
+            $rssi dBm
             
             TTL:
             ${packet.ttl}
@@ -219,34 +235,23 @@ class MeshService : Service() {
             """.trimIndent()
         )
 
-        // ----------------------------------------------
-        // CHECK TTL
-        // ----------------------------------------------
+        // --------------------------------------------------
+        // TTL CHECK
+        // --------------------------------------------------
 
         if (
             packet.ttl.toInt() <= 0
         ) {
 
-            updateNotification(
-                """
-                SOS RECEIVED
-                
-                TTL EXPIRED
-                
-                Source:
-                ${
-                    nodeIdToString(
-                        packet.sourceId
-                    )
-                }
-                """.trimIndent()
-            )
-
             sendSosToUI(
+
                 """
                 ╔══════════════════════════╗
                        🚨 SOS RECEIVED
                 ╚══════════════════════════╝
+                
+                SOS:
+                $sosName
                 
                 SOURCE DEVICE:
                 ${
@@ -255,9 +260,15 @@ class MeshService : Service() {
                     )
                 }
                 
-                SOURCE GPS:
+                SOURCE LOCATION:
                 ${packet.sourceLatitude},
                 ${packet.sourceLongitude}
+                
+                RECEIVED VIA:
+                BLUETOOTH BLE
+
+                SIGNAL:
+                $rssi dBm
                 
                 TTL:
                 EXPIRED
@@ -270,13 +281,17 @@ class MeshService : Service() {
             return
         }
 
-        // ----------------------------------------------
-        // GET CURRENT RELAY GPS
-        // ----------------------------------------------
+        // --------------------------------------------------
+        // GET RELAY GPS
+        // --------------------------------------------------
 
         updateNotification(
+
             """
             SOS RECEIVED
+            
+            SOS:
+            $sosName
             
             Getting relay GPS...
             
@@ -290,28 +305,9 @@ class MeshService : Service() {
             Source GPS:
             ${packet.sourceLatitude},
             ${packet.sourceLongitude}
-            """.trimIndent()
-        )
 
-        sendSosToUI(
-            """
-            ╔══════════════════════════╗
-                   🚨 SOS RECEIVED
-            ╚══════════════════════════╝
-            
-            SOURCE DEVICE:
-            ${
-                nodeIdToString(
-                    packet.sourceId
-                )
-            }
-            
-            SOURCE GPS:
-            ${packet.sourceLatitude},
-            ${packet.sourceLongitude}
-            
-            STATUS:
-            GETTING CURRENT GPS...
+            Signal:
+            $rssi dBm
             """.trimIndent()
         )
 
@@ -324,7 +320,8 @@ class MeshService : Service() {
                     relayPacket(
                         packet,
                         gps,
-                        myNodeId
+                        myNodeId,
+                        rssi
                     )
                 }
             },
@@ -332,8 +329,12 @@ class MeshService : Service() {
             onError = { error ->
 
                 updateNotification(
+
                     """
                     SOS RECEIVED
+                    
+                    SOS:
+                    $sosName
                     
                     GPS ERROR
                     
@@ -345,10 +346,12 @@ class MeshService : Service() {
                 )
 
                 sendSosToUI(
+
                     """
-                    ╔══════════════════════════╗
-                           🚨 SOS RECEIVED
-                    ╚══════════════════════════╝
+                    🚨 SOS RECEIVED
+                    
+                    SOS:
+                    $sosName
                     
                     SOURCE DEVICE:
                     ${
@@ -357,14 +360,18 @@ class MeshService : Service() {
                         )
                     }
                     
-                    SOURCE GPS:
+                    SOURCE LOCATION:
                     ${packet.sourceLatitude},
                     ${packet.sourceLongitude}
                     
+                    RECEIVED VIA:
+                    BLUETOOTH BLE
+
+                    SIGNAL:
+                    $rssi dBm
+                    
                     STATUS:
                     GPS ERROR
-                    
-                    $error
                     
                     NOT FORWARDED
                     """.trimIndent()
@@ -373,14 +380,15 @@ class MeshService : Service() {
         )
     }
 
-    // --------------------------------------------------
-    // RELAY PACKET
-    // --------------------------------------------------
+    // ==================================================
+    // RELAY / FORWARD PACKET
+    // ==================================================
 
     private fun relayPacket(
         packet: SosPacket,
         gps: GpsLocation,
-        myNodeId: Short
+        myNodeId: Short,
+        rssi: Int
     ) {
 
         val newTtl =
@@ -388,38 +396,57 @@ class MeshService : Service() {
                     packet.ttl.toInt() - 1
                     ).toByte()
 
+        /*
+         * IMPORTANT:
+         *
+         * sourceId stays the same.
+         *
+         * sourceLatitude stays the same.
+         *
+         * sourceLongitude stays the same.
+         *
+         * sosType stays the same.
+         *
+         * Only relayId and TTL change.
+         */
+
         val forwardedPacket =
             packet.copy(
 
-                // Original source remains unchanged
                 sourceId =
                     packet.sourceId,
 
-                // This phone becomes the new relay
                 relayId =
                     myNodeId,
 
-                // Original source GPS remains unchanged
                 sourceLatitude =
                     packet.sourceLatitude,
 
                 sourceLongitude =
                     packet.sourceLongitude,
 
-                // TTL decreases
                 ttl =
                     newTtl
             )
 
-        // ----------------------------------------------
-        // SHOW FORWARDING ON PHONE UI
-        // ----------------------------------------------
+        val sosName =
+            SosPacket.getSosTypeName(
+                packet.sosType
+            )
+
+        // --------------------------------------------------
+        // SHOW FORWARDING ON PHONE B
+        // --------------------------------------------------
 
         sendSosToUI(
+
             """
             ╔══════════════════════════╗
                    🚨 SOS RELAY
             ╚══════════════════════════╝
+            
+            SOS:
+            $sosName
             
             STATUS:
             FORWARDING
@@ -448,93 +475,83 @@ class MeshService : Service() {
                 )
             }
             
-            SOURCE GPS:
+            SOURCE LOCATION:
             ${packet.sourceLatitude},
             ${packet.sourceLongitude}
             
-            CURRENT GPS:
+            CURRENT RELAY LOCATION:
             ${gps.latitude},
             ${gps.longitude}
+
+            SIGNAL:
+            $rssi dBm
             
             TTL:
             ${packet.ttl} → $newTtl
+            
+            RECEIVED VIA:
+            BLUETOOTH BLE
+            
+            FORWARDING VIA:
+            BLUETOOTH BLE
             """.trimIndent()
         )
 
-        // ----------------------------------------------
-        // UPDATE NOTIFICATION
-        // ----------------------------------------------
+        // --------------------------------------------------
+        // NOTIFICATION
+        // --------------------------------------------------
 
         updateNotification(
+
             """
-            ╔══════════════════════╗
-                  SOS RELAY
-            ╚══════════════════════╝
+            SOS RELAY
             
-            STATUS:
-            FORWARDING
+            $sosName
             
-            MESSAGE:
-            ${packet.messageId}
-            
-            SOURCE DEVICE:
+            Source:
             ${
                 nodeIdToString(
                     packet.sourceId
                 )
             }
             
-            PREVIOUS RELAY:
-            ${
-                nodeIdToString(
-                    packet.relayId
-                )
-            }
-            
-            CURRENT RELAY:
+            Relay:
             ${
                 nodeIdToString(
                     myNodeId
                 )
             }
             
-            SOURCE GPS:
-            ${packet.sourceLatitude},
-            ${packet.sourceLongitude}
-            
-            CURRENT GPS:
-            ${gps.latitude},
-            ${gps.longitude}
-            
             TTL:
             ${packet.ttl} → $newTtl
+
+            Signal:
+            $rssi dBm
             """.trimIndent()
         )
 
-        // ----------------------------------------------
-        // FORWARD SOS
-        // ----------------------------------------------
+        // --------------------------------------------------
+        // FORWARD THROUGH BLE
+        // --------------------------------------------------
 
         bleManager.advertise(
             forwardedPacket
         )
 
-        // ----------------------------------------------
-        // STOP FORWARDING AFTER 30 SECONDS
-        // ----------------------------------------------
+        // --------------------------------------------------
+        // ADVERTISE FOR 30 SECONDS
+        // --------------------------------------------------
 
         serviceScope.launch {
 
             delay(30_000)
 
-            // Resume the presence beacon rather than going
-            // silent, so this phone stays visible/live on
-            // nearby phones' signal panels between SOS events.
             bleManager.advertise(
                 createBeaconPacket()
             )
 
             updateNotification(
+
                 """
                 RELAY READY
                 
@@ -543,6 +560,7 @@ class MeshService : Service() {
             )
 
             sendSosToUI(
+
                 """
                 MESH SOS
                 
@@ -555,9 +573,9 @@ class MeshService : Service() {
         }
     }
 
-    // --------------------------------------------------
-    // SEND MESSAGE TO MAIN ACTIVITY
-    // --------------------------------------------------
+    // ==================================================
+    // SEND SOS INFORMATION TO MAIN ACTIVITY
+    // ==================================================
 
     private fun sendSosToUI(
         message: String
@@ -567,11 +585,6 @@ class MeshService : Service() {
             Intent(
                 MainActivity.ACTION_SOS_RECEIVED
             )
-
-        /*
-         * Keep the broadcast inside
-         * our own application.
-         */
 
         intent.setPackage(
             packageName
@@ -585,15 +598,11 @@ class MeshService : Service() {
         sendBroadcast(
             intent
         )
-
-        println(
-            "MESH UI UPDATE:\n$message"
-        )
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // NODE ID
-    // --------------------------------------------------
+    // ==================================================
 
     private fun nodeIdToString(
         id: Short
@@ -604,9 +613,9 @@ class MeshService : Service() {
                 ).toString()
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // NOTIFICATION
-    // --------------------------------------------------
+    // ==================================================
 
     private fun updateNotification(
         message: String
@@ -629,9 +638,9 @@ class MeshService : Service() {
         )
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // NOTIFICATION CHANNEL
-    // --------------------------------------------------
+    // ==================================================
 
     private fun createNotificationChannel() {
 
@@ -652,9 +661,9 @@ class MeshService : Service() {
         )
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // CREATE NOTIFICATION
-    // --------------------------------------------------
+    // ==================================================
 
     private fun createNotification(
         message: String =
@@ -680,9 +689,9 @@ class MeshService : Service() {
             .build()
     }
 
-    // --------------------------------------------------
-    // SERVICE DESTROYED
-    // --------------------------------------------------
+    // ==================================================
+    // SERVICE DESTROY
+    // ==================================================
 
     override fun onDestroy() {
 
@@ -695,9 +704,9 @@ class MeshService : Service() {
         super.onDestroy()
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // BIND
-    // --------------------------------------------------
+    // ==================================================
 
     override fun onBind(
         intent: Intent?

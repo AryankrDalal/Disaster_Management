@@ -1,7 +1,7 @@
 package com.example.disastermanagement
 
 import android.Manifest
-import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,8 +13,10 @@ import android.os.Bundle
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -25,10 +27,22 @@ import java.util.concurrent.atomic.AtomicInteger
 class MainActivity : ComponentActivity() {
 
     private lateinit var bleManager: BleManager
+
     private lateinit var packetStore: PacketStore
+
     private lateinit var locationManager: LocationManager
 
     private lateinit var statusText: TextView
+
+    private lateinit var signalText: TextView
+
+    private lateinit var sosSpinner: Spinner
+
+    private val signalStrengths =
+        linkedMapOf<Short, Int>()
+
+    private var signalTrackingPaused =
+        false
 
     private val messageCounter =
         AtomicInteger(1000)
@@ -44,24 +58,9 @@ class MainActivity : ComponentActivity() {
             "com.example.disastermanagement.SIGNAL_UPDATE"
     }
 
-    // --------------------------------------------------
-    // LIVE SIGNAL STRENGTH STATE
-    // --------------------------------------------------
-
-    // nodeId -> last known RSSI (dBm), sorted strongest first for display
-    private val signalStrengths =
-        linkedMapOf<Short, Int>()
-
-    // When true, incoming RSSI readings are ignored and the
-    // panel stays on "No nearby devices" until mesh relay or
-    // SOS sending is explicitly started again.
-    private var signalTrackingPaused = false
-
-    private lateinit var signalText: TextView
-
-    // --------------------------------------------------
-    // RECEIVE MESSAGES FROM MESH SERVICE
-    // --------------------------------------------------
+    // ==================================================
+    // RECEIVE SOS FROM MESH SERVICE
+    // ==================================================
 
     private val sosReceiver =
         object : BroadcastReceiver() {
@@ -76,7 +75,9 @@ class MainActivity : ComponentActivity() {
                     ACTION_SOS_RECEIVED -> {
 
                         val message =
-                            intent.getStringExtra("message")
+                            intent.getStringExtra(
+                                "message"
+                            )
                                 ?: "SOS received"
 
                         runOnUiThread {
@@ -86,7 +87,7 @@ class MainActivity : ComponentActivity() {
 
                             Toast.makeText(
                                 this@MainActivity,
-                                "SOS RECEIVED",
+                                "🚨 SOS RECEIVED",
                                 Toast.LENGTH_LONG
                             ).show()
                         }
@@ -118,6 +119,10 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    // ==================================================
+    // ON CREATE
+    // ==================================================
+
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
@@ -138,9 +143,9 @@ class MainActivity : ComponentActivity() {
         requestPermissions()
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // REGISTER RECEIVER
-    // --------------------------------------------------
+    // ==================================================
 
     override fun onStart() {
 
@@ -174,11 +179,12 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        // So the SENDING phone can also see live signal
-        // strength to whoever relays/receives its SOS, not
-        // just phones running the mesh relay service.
         startPassiveSignalScanning()
     }
+
+    // ==================================================
+    // UNREGISTER RECEIVER
+    // ==================================================
 
     override fun onStop() {
 
@@ -191,9 +197,9 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    // --------------------------------------------------
-    // UI
-    // --------------------------------------------------
+    // ==================================================
+    // CREATE USER INTERFACE
+    // ==================================================
 
     private fun createUI() {
 
@@ -210,46 +216,75 @@ class MainActivity : ComponentActivity() {
             40
         )
 
-        val nodeIdText =
+        // ==================================================
+        // TITLE
+        // ==================================================
+
+        val title =
             TextView(this)
 
-        nodeIdText.text =
-            "DEVICE NODE ID: " +
-                    nodeIdToString(
-                        packetStore.getNodeId()
-                    )
+        title.text =
+            "MESH SOS"
 
-        nodeIdText.textSize = 18f
+        title.textSize =
+            28f
 
         layout.addView(
-            nodeIdText
+            title
         )
+
+        // ==================================================
+        // DEVICE ID
+        // ==================================================
+
+        val deviceIdText =
+            TextView(this)
+
+        deviceIdText.text =
+            """
+            DEVICE ID:
+            ${nodeIdToString(packetStore.getNodeId())}
+            """.trimIndent()
+
+        deviceIdText.textSize =
+            16f
+
+        layout.addView(
+            deviceIdText
+        )
+
+        // ==================================================
+        // STATUS
+        // ==================================================
 
         statusText =
             TextView(this)
 
         statusText.text =
             """
-            MESH SOS
-            
-            STATUS: READY
-            
-            GPS: Waiting
+            STATUS:
+            READY
             """.trimIndent()
 
-        statusText.textSize = 18f
+        statusText.textSize =
+            18f
 
         layout.addView(
             statusText
         )
 
+        // ==================================================
+        // LIVE SIGNAL STRENGTH
+        // ==================================================
+
         signalText =
             TextView(this)
 
         signalText.text =
-            "SIGNAL: No nearby devices"
+            "SIGNAL STRENGTH:\nNo nearby SOS / relay devices"
 
-        signalText.textSize = 16f
+        signalText.textSize =
+            16f
 
         signalText.setPadding(
             0,
@@ -262,19 +297,37 @@ class MainActivity : ComponentActivity() {
             signalText
         )
 
+        // ==================================================
+        // MESH CONTROLS
+        // ==================================================
+
+        val meshTitle =
+            TextView(this)
+
+        meshTitle.text =
+            "MESH CONTROLS"
+
+        meshTitle.textSize =
+            21f
+
+        layout.addView(
+            meshTitle
+        )
+
         // --------------------------------------------------
-        // START RELAY
+        // START MESH RELAY
         // --------------------------------------------------
 
-        val relayButton =
+        val startButton =
             Button(this)
 
-        relayButton.text =
+        startButton.text =
             "START MESH RELAY"
 
-        relayButton.setOnClickListener {
+        startButton.setOnClickListener {
 
-            signalTrackingPaused = false
+            signalTrackingPaused =
+                false
 
             startMeshService()
 
@@ -282,22 +335,23 @@ class MainActivity : ComponentActivity() {
         }
 
         layout.addView(
-            relayButton
+            startButton
         )
 
         // --------------------------------------------------
         // SEND SOS
         // --------------------------------------------------
 
-        val sosButton =
+        val sendSosButton =
             Button(this)
 
-        sosButton.text =
+        sendSosButton.text =
             "SEND SOS"
 
-        sosButton.setOnClickListener {
+        sendSosButton.setOnClickListener {
 
-            signalTrackingPaused = false
+            signalTrackingPaused =
+                false
 
             startPassiveSignalScanning()
 
@@ -305,7 +359,7 @@ class MainActivity : ComponentActivity() {
         }
 
         layout.addView(
-            sosButton
+            sendSosButton
         )
 
         // --------------------------------------------------
@@ -329,16 +383,12 @@ class MainActivity : ComponentActivity() {
 
             statusText.text =
                 """
-                MESH SOS
-                
                 STATUS:
                 MESH STOPPED
                 """.trimIndent()
 
-            // Stop this phone's own passive scan too, and
-            // ignore any updates already in flight, so the
-            // panel stays cleared until explicitly restarted.
-            signalTrackingPaused = true
+            signalTrackingPaused =
+                true
 
             bleManager.stopScanning()
 
@@ -349,14 +399,122 @@ class MainActivity : ComponentActivity() {
             stopButton
         )
 
+        // ==================================================
+        // SOS SECTION
+        // ==================================================
+
+        val sosTitle =
+            TextView(this)
+
+        sosTitle.text =
+            "SOS:"
+
+        sosTitle.textSize =
+            22f
+
+        layout.addView(
+            sosTitle
+        )
+
+        // --------------------------------------------------
+        // SOS KEYWORD SELECTOR
+        // --------------------------------------------------
+
+        sosSpinner =
+            Spinner(this)
+
+        val sosOptions =
+            arrayOf(
+
+                "🚑 Medical Emergency",
+
+                "🔥 Fire",
+
+                "🆘 Trapped",
+
+                "⚠️ Accident",
+
+                "💧 Need Water",
+
+                "🏠 Evacuation Required"
+            )
+
+        val adapter =
+            ArrayAdapter(
+                this,
+                android.R.layout.simple_spinner_item,
+                sosOptions
+            )
+
+        adapter.setDropDownViewResource(
+            android.R.layout
+                .simple_spinner_dropdown_item
+        )
+
+        sosSpinner.adapter =
+            adapter
+
+        layout.addView(
+            sosSpinner
+        )
+
+        // --------------------------------------------------
+        // SEND SELECTED SOS
+        // --------------------------------------------------
+
+        val sendSelectedButton =
+            Button(this)
+
+        sendSelectedButton.text =
+            "SEND SELECTED SOS"
+
+        sendSelectedButton.setOnClickListener {
+
+            val selected =
+                sosSpinner.selectedItemPosition
+
+            val sosType =
+                when (selected) {
+
+                    0 ->
+                        SosPacket.MEDICAL.toByte()
+
+                    1 ->
+                        SosPacket.FIRE.toByte()
+
+                    2 ->
+                        SosPacket.TRAPPED.toByte()
+
+                    3 ->
+                        SosPacket.ACCIDENT.toByte()
+
+                    4 ->
+                        SosPacket.NEED_WATER.toByte()
+
+                    5 ->
+                        SosPacket.EVACUATION.toByte()
+
+                    else ->
+                        SosPacket.MEDICAL.toByte()
+                }
+
+            sendSOSWithType(
+                sosType
+            )
+        }
+
+        layout.addView(
+            sendSelectedButton
+        )
+
         setContentView(
             layout
         )
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // START MESH SERVICE
-    // --------------------------------------------------
+    // ==================================================
 
     private fun startMeshService() {
 
@@ -377,9 +535,7 @@ class MainActivity : ComponentActivity() {
 
         } else {
 
-            startService(
-                intent
-            )
+            startService(intent)
         }
 
         statusText.text =
@@ -396,22 +552,37 @@ class MainActivity : ComponentActivity() {
                 )
             }
             
-            GPS:
-            Obtaining...
-            
             LISTENING FOR SOS...
             """.trimIndent()
     }
 
-    // --------------------------------------------------
-    // SEND SOS
-    // --------------------------------------------------
+    // ==================================================
+    // DEFAULT SEND SOS
+    // ==================================================
 
     private fun sendSOS() {
+
+        sendSOSWithType(
+            SosPacket.MEDICAL.toByte()
+        )
+    }
+
+    // ==================================================
+    // SEND SELECTED SOS
+    // ==================================================
+
+    private fun sendSOSWithType(
+        sosType: Byte
+    ) {
 
         if (!checkBluetooth()) {
             return
         }
+
+        val sosName =
+            SosPacket.getSosTypeName(
+                sosType
+            )
 
         statusText.text =
             """
@@ -420,7 +591,8 @@ class MainActivity : ComponentActivity() {
             STATUS:
             GETTING GPS...
             
-            Please wait...
+            SOS:
+            $sosName
             """.trimIndent()
 
         locationManager.getCurrentLocation(
@@ -429,7 +601,79 @@ class MainActivity : ComponentActivity() {
 
                 runOnUiThread {
 
-                    transmitSOS(gps)
+                    val messageId =
+                        messageCounter
+                            .incrementAndGet()
+
+                    val sourceId =
+                        packetStore
+                            .getNodeId()
+
+                    val packet =
+                        SosPacket(
+
+                            messageId =
+                                messageId,
+
+                            sourceId =
+                                sourceId,
+
+                            relayId =
+                                sourceId,
+
+                            sourceLatitude =
+                                gps.latitude,
+
+                            sourceLongitude =
+                                gps.longitude,
+
+                            ttl =
+                                5,
+
+                            sosType =
+                                sosType
+                        )
+
+                    // ----------------------------------
+                    // SEND THROUGH BLE
+                    // ----------------------------------
+
+                    bleManager.advertise(
+                        packet
+                    )
+
+                    statusText.text =
+                        """
+                        🚨 SOS TRANSMITTING
+                        
+                        TYPE:
+                        ${
+                            SosPacket
+                                .getSosTypeName(
+                                    sosType
+                                )
+                        }
+                        
+                        SOURCE DEVICE:
+                        ${
+                            nodeIdToString(
+                                sourceId
+                            )
+                        }
+                        
+                        SOURCE LOCATION:
+                        ${gps.latitude},
+                        ${gps.longitude}
+                        
+                        TTL:
+                        ${packet.ttl}
+                        
+                        MESSAGE ID:
+                        $messageId
+                        
+                        TRANSPORT:
+                        BLUETOOTH BLE
+                        """.trimIndent()
                 }
             },
 
@@ -439,9 +683,6 @@ class MainActivity : ComponentActivity() {
 
                     statusText.text =
                         """
-                        MESH SOS
-                        
-                        STATUS:
                         GPS ERROR
                         
                         $error
@@ -457,82 +698,19 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    // --------------------------------------------------
-    // TRANSMIT SOS
-    // --------------------------------------------------
-
-    private fun transmitSOS(
-        gps: GpsLocation
-    ) {
-
-        val messageId =
-            messageCounter.incrementAndGet()
-
-        val sourceId =
-            packetStore.getNodeId()
-
-        val packet =
-            SosPacket(
-
-                messageId =
-                    messageId,
-
-                sourceId =
-                    sourceId,
-
-                relayId =
-                    sourceId,
-
-                sourceLatitude =
-                    gps.latitude,
-
-                sourceLongitude =
-                    gps.longitude,
-
-                ttl =
-                    5
-            )
-
-        bleManager.advertise(
-            packet
-        )
-
-        statusText.text =
-            """
-            MESH SOS
-            
-            STATUS:
-            SOS TRANSMITTING
-            
-            SOURCE DEVICE:
-            ${
-                nodeIdToString(
-                    sourceId
-                )
-            }
-            
-            SOURCE LATITUDE:
-            ${gps.latitude}
-            
-            SOURCE LONGITUDE:
-            ${gps.longitude}
-            
-            TTL:
-            ${packet.ttl}
-            
-            MESSAGE ID:
-            $messageId
-            """.trimIndent()
-    }
-
-    // --------------------------------------------------
-    // BLUETOOTH
-    // --------------------------------------------------
+    // ==================================================
+    // BLUETOOTH CHECK
+    // ==================================================
 
     private fun checkBluetooth(): Boolean {
 
+        val bluetoothManager =
+            getSystemService(
+                BluetoothManager::class.java
+            )
+
         val adapter =
-            BluetoothAdapter.getDefaultAdapter()
+            bluetoothManager.adapter
 
         if (
             adapter == null ||
@@ -551,9 +729,9 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // PERMISSIONS
-    // --------------------------------------------------
+    // ==================================================
 
     private fun requestPermissions() {
 
@@ -602,7 +780,9 @@ class MainActivity : ComponentActivity() {
                 ContextCompat.checkSelfPermission(
                     this,
                     it
-                ) != PackageManager.PERMISSION_GRANTED
+                ) !=
+                        PackageManager
+                            .PERMISSION_GRANTED
             }
 
         if (missing.isNotEmpty()) {
@@ -615,6 +795,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
@@ -629,17 +810,13 @@ class MainActivity : ComponentActivity() {
 
         if (requestCode == PERMISSION_REQUEST_CODE) {
 
-            // Permissions may have just been granted -
-            // start (or retry) passive signal scanning.
             startPassiveSignalScanning()
         }
     }
 
-    // --------------------------------------------------
-    // PASSIVE SIGNAL SCANNING (this phone, not the relay
-    // service). Lets the SENDING phone see live RSSI to
-    // whoever picks up / relays its SOS.
-    // --------------------------------------------------
+    // ==================================================
+    // PASSIVE SIGNAL SCANNING
+    // ==================================================
 
     private fun hasScanPermissions(): Boolean {
 
@@ -672,7 +849,6 @@ class MainActivity : ComponentActivity() {
     private fun startPassiveSignalScanning() {
 
         if (!hasScanPermissions()) {
-
             return
         }
 
@@ -688,6 +864,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ==================================================
+    // NODE ID
+    // ==================================================
+
     private fun nodeIdToString(
         id: Short
     ): String {
@@ -697,16 +877,16 @@ class MainActivity : ComponentActivity() {
                 ).toString()
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // SIGNAL STRENGTH DISPLAY
-    // --------------------------------------------------
+    // ==================================================
 
     private fun clearSignalDisplay() {
 
         signalStrengths.clear()
 
         signalText.text =
-            "SIGNAL: No nearby devices"
+            "SIGNAL STRENGTH:\nNo nearby SOS / relay devices"
     }
 
     private fun updateSignalDisplay(
@@ -718,17 +898,18 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // Move this node to the front (most recently heard)
         signalStrengths.remove(nodeId)
-        signalStrengths[nodeId] = rssi
+        signalStrengths[nodeId] =
+            rssi
 
-        // Keep the list from growing forever
         while (signalStrengths.size > 8) {
 
             val oldestKey =
                 signalStrengths.keys.first()
 
-            signalStrengths.remove(oldestKey)
+            signalStrengths.remove(
+                oldestKey
+            )
         }
 
         val builder =
@@ -762,10 +943,9 @@ class MainActivity : ComponentActivity() {
             val line =
                 "$bar  Node ${
                     nodeIdToString(entryNodeId)
-                }: $entryRssi dBm " +
-                        "($quality, ~${
-                            "%.0f".format(distance)
-                        }m)"
+                }: $quality ($entryRssi dBm, ~${
+                    "%.0f".format(distance)
+                }m)"
 
             val lineStart =
                 builder.length
@@ -794,10 +974,6 @@ class MainActivity : ComponentActivity() {
             builder
     }
 
-    /**
-     * Simple 5-segment bar built from block characters,
-     * scaled between -100 dBm (empty) and -30 dBm (full).
-     */
     private fun rssiToBarString(
         rssi: Int
     ): String {
@@ -824,44 +1000,37 @@ class MainActivity : ComponentActivity() {
         return when {
 
             rssi >= -60 ->
-                Color.parseColor("#2E7D32") // green: strong
+                Color.parseColor("#2E7D32")
 
             rssi >= -75 ->
-                Color.parseColor("#F9A825") // amber: medium
+                Color.parseColor("#F9A825")
 
             rssi >= -90 ->
-                Color.parseColor("#EF6C00") // orange: weak
+                Color.parseColor("#EF6C00")
 
             else ->
-                Color.parseColor("#C62828") // red: very weak
+                Color.parseColor("#C62828")
         }
     }
 
-    /**
-     * Very rough distance estimate from RSSI using the
-     * log-distance path loss model. This is NOT precise -
-     * BLE RSSI is noisy and affected by obstacles, phone
-     * orientation, and antenna differences between devices.
-     * Treat it as "closer/farther", not a real measurement.
-     */
     private fun rssiToDistanceMeters(
         rssi: Int
     ): Double {
 
-        // Assumed calibrated RSSI at 1 meter. Real apps should
-        // calibrate this per device/tx-power if possible.
-        val txPowerAt1m = -59
+        val txPowerAt1m =
+            -59
 
-        // Path loss exponent: ~2 in free space, higher (3-4)
-        // indoors or with obstructions. 2.5 is a reasonable
-        // middle ground for outdoor disaster scenarios.
-        val pathLossExponent = 2.5
+        val pathLossExponent =
+            2.5
 
         val ratio =
             (txPowerAt1m - rssi) /
                     (10.0 * pathLossExponent)
 
-        return Math.pow(10.0, ratio)
+        return Math.pow(
+            10.0,
+            ratio
+        )
     }
 
     private fun rssiQuality(
@@ -870,12 +1039,23 @@ class MainActivity : ComponentActivity() {
 
         return when {
 
-            rssi >= -60 -> "Strong"
-            rssi >= -75 -> "Medium"
-            rssi >= -90 -> "Weak"
-            else -> "Very Weak"
+            rssi >= -60 ->
+                "Excellent"
+
+            rssi >= -75 ->
+                "Good"
+
+            rssi >= -90 ->
+                "Weak"
+
+            else ->
+                "Very Weak"
         }
     }
+
+    // ==================================================
+    // DESTROY
+    // ==================================================
 
     override fun onDestroy() {
 
