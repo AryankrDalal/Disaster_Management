@@ -7,8 +7,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -35,7 +39,20 @@ class MainActivity : ComponentActivity() {
 
         const val ACTION_SOS_RECEIVED =
             "com.example.disastermanagement.SOS_RECEIVED"
+
+        const val ACTION_SIGNAL_UPDATE =
+            "com.example.disastermanagement.SIGNAL_UPDATE"
     }
+
+    // --------------------------------------------------
+    // LIVE SIGNAL STRENGTH STATE
+    // --------------------------------------------------
+
+    // nodeId -> last known RSSI (dBm), sorted strongest first for display
+    private val signalStrengths =
+        linkedMapOf<Short, Int>()
+
+    private lateinit var signalText: TextView
 
     // --------------------------------------------------
     // RECEIVE MESSAGES FROM MESH SERVICE
@@ -49,24 +66,49 @@ class MainActivity : ComponentActivity() {
                 intent: Intent?
             ) {
 
-                if (intent?.action != ACTION_SOS_RECEIVED) {
-                    return
-                }
+                when (intent?.action) {
 
-                val message =
-                    intent.getStringExtra("message")
-                        ?: "SOS received"
+                    ACTION_SOS_RECEIVED -> {
 
-                runOnUiThread {
+                        val message =
+                            intent.getStringExtra("message")
+                                ?: "SOS received"
 
-                    statusText.text =
-                        message
+                        runOnUiThread {
 
-                    Toast.makeText(
-                        this@MainActivity,
-                        "SOS RECEIVED",
-                        Toast.LENGTH_LONG
-                    ).show()
+                            statusText.text =
+                                message
+
+                            Toast.makeText(
+                                this@MainActivity,
+                                "SOS RECEIVED",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+
+                    ACTION_SIGNAL_UPDATE -> {
+
+                        val nodeId =
+                            intent.getShortExtra(
+                                "nodeId",
+                                0
+                            )
+
+                        val rssi =
+                            intent.getIntExtra(
+                                "rssi",
+                                0
+                            )
+
+                        runOnUiThread {
+
+                            updateSignalDisplay(
+                                nodeId,
+                                rssi
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -104,6 +146,10 @@ class MainActivity : ComponentActivity() {
                 ACTION_SOS_RECEIVED
             )
 
+        filter.addAction(
+            ACTION_SIGNAL_UPDATE
+        )
+
         if (
             Build.VERSION.SDK_INT >=
             Build.VERSION_CODES.TIRAMISU
@@ -122,9 +168,16 @@ class MainActivity : ComponentActivity() {
                 filter
             )
         }
+
+        // So the SENDING phone can also see live signal
+        // strength to whoever relays/receives its SOS, not
+        // just phones running the mesh relay service.
+        startPassiveSignalScanning()
     }
 
     override fun onStop() {
+
+        bleManager.stopScanning()
 
         unregisterReceiver(
             sosReceiver
@@ -183,6 +236,25 @@ class MainActivity : ComponentActivity() {
 
         layout.addView(
             statusText
+        )
+
+        signalText =
+            TextView(this)
+
+        signalText.text =
+            "SIGNAL: No nearby devices"
+
+        signalText.textSize = 16f
+
+        signalText.setPadding(
+            0,
+            20,
+            0,
+            20
+        )
+
+        layout.addView(
+            signalText
         )
 
         // --------------------------------------------------
@@ -521,6 +593,79 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+
+        super.onRequestPermissionsResult(
+            requestCode,
+            permissions,
+            grantResults
+        )
+
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+
+            // Permissions may have just been granted -
+            // start (or retry) passive signal scanning.
+            startPassiveSignalScanning()
+        }
+    }
+
+    // --------------------------------------------------
+    // PASSIVE SIGNAL SCANNING (this phone, not the relay
+    // service). Lets the SENDING phone see live RSSI to
+    // whoever picks up / relays its SOS.
+    // --------------------------------------------------
+
+    private fun hasScanPermissions(): Boolean {
+
+        val scanPermissionGranted =
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.S
+            ) {
+
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.BLUETOOTH_SCAN
+                ) == PackageManager.PERMISSION_GRANTED
+
+            } else {
+
+                true
+            }
+
+        val locationPermissionGranted =
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+        return scanPermissionGranted &&
+                locationPermissionGranted
+    }
+
+    private fun startPassiveSignalScanning() {
+
+        if (!hasScanPermissions()) {
+
+            return
+        }
+
+        bleManager.startScanning { packet, rssi ->
+
+            runOnUiThread {
+
+                updateSignalDisplay(
+                    packet.relayId,
+                    rssi
+                )
+            }
+        }
+    }
+
     private fun nodeIdToString(
         id: Short
     ): String {
@@ -528,6 +673,174 @@ class MainActivity : ComponentActivity() {
         return (
                 id.toInt() and 0xFFFF
                 ).toString()
+    }
+
+    // --------------------------------------------------
+    // SIGNAL STRENGTH DISPLAY
+    // --------------------------------------------------
+
+    private fun updateSignalDisplay(
+        nodeId: Short,
+        rssi: Int
+    ) {
+
+        // Move this node to the front (most recently heard)
+        signalStrengths.remove(nodeId)
+        signalStrengths[nodeId] = rssi
+
+        // Keep the list from growing forever
+        while (signalStrengths.size > 8) {
+
+            val oldestKey =
+                signalStrengths.keys.first()
+
+            signalStrengths.remove(oldestKey)
+        }
+
+        val builder =
+            SpannableStringBuilder()
+
+        builder.append(
+            "SIGNAL STRENGTH:\n"
+        )
+
+        val sortedEntries =
+            signalStrengths.entries
+                .sortedByDescending { it.value }
+
+        for (
+        (index, entry) in
+        sortedEntries.withIndex()
+        ) {
+
+            val (entryNodeId, entryRssi) =
+                entry
+
+            val quality =
+                rssiQuality(entryRssi)
+
+            val bar =
+                rssiToBarString(entryRssi)
+
+            val distance =
+                rssiToDistanceMeters(entryRssi)
+
+            val line =
+                "$bar  Node ${
+                    nodeIdToString(entryNodeId)
+                }: $entryRssi dBm " +
+                        "($quality, ~${
+                            "%.0f".format(distance)
+                        }m)"
+
+            val lineStart =
+                builder.length
+
+            builder.append(line)
+
+            builder.setSpan(
+                ForegroundColorSpan(
+                    rssiColor(entryRssi)
+                ),
+                lineStart,
+                builder.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+
+            if (
+                index <
+                sortedEntries.size - 1
+            ) {
+
+                builder.append("\n")
+            }
+        }
+
+        signalText.text =
+            builder
+    }
+
+    /**
+     * Simple 5-segment bar built from block characters,
+     * scaled between -100 dBm (empty) and -30 dBm (full).
+     */
+    private fun rssiToBarString(
+        rssi: Int
+    ): String {
+
+        val clamped =
+            rssi.coerceIn(-100, -30)
+
+        val percent =
+            (clamped + 100) / 70.0
+
+        val filledBars =
+            (percent * 5)
+                .toInt()
+                .coerceIn(0, 5)
+
+        return "█".repeat(filledBars) +
+                "░".repeat(5 - filledBars)
+    }
+
+    private fun rssiColor(
+        rssi: Int
+    ): Int {
+
+        return when {
+
+            rssi >= -60 ->
+                Color.parseColor("#2E7D32") // green: strong
+
+            rssi >= -75 ->
+                Color.parseColor("#F9A825") // amber: medium
+
+            rssi >= -90 ->
+                Color.parseColor("#EF6C00") // orange: weak
+
+            else ->
+                Color.parseColor("#C62828") // red: very weak
+        }
+    }
+
+    /**
+     * Very rough distance estimate from RSSI using the
+     * log-distance path loss model. This is NOT precise -
+     * BLE RSSI is noisy and affected by obstacles, phone
+     * orientation, and antenna differences between devices.
+     * Treat it as "closer/farther", not a real measurement.
+     */
+    private fun rssiToDistanceMeters(
+        rssi: Int
+    ): Double {
+
+        // Assumed calibrated RSSI at 1 meter. Real apps should
+        // calibrate this per device/tx-power if possible.
+        val txPowerAt1m = -59
+
+        // Path loss exponent: ~2 in free space, higher (3-4)
+        // indoors or with obstructions. 2.5 is a reasonable
+        // middle ground for outdoor disaster scenarios.
+        val pathLossExponent = 2.5
+
+        val ratio =
+            (txPowerAt1m - rssi) /
+                    (10.0 * pathLossExponent)
+
+        return Math.pow(10.0, ratio)
+    }
+
+    private fun rssiQuality(
+        rssi: Int
+    ): String {
+
+        return when {
+
+            rssi >= -60 -> "Strong"
+            rssi >= -75 -> "Medium"
+            rssi >= -90 -> "Weak"
+            else -> "Very Weak"
+        }
     }
 
     override fun onDestroy() {

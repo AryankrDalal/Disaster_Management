@@ -12,6 +12,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 class MeshService : Service() {
 
@@ -26,6 +27,14 @@ class MeshService : Service() {
             SupervisorJob() +
                     Dispatchers.Main
         )
+
+    // --------------------------------------------------
+    // LIVE SIGNAL STRENGTH
+    // --------------------------------------------------
+
+    // nodeId of transmitter -> last known RSSI (dBm)
+    private val nodeSignalStrength =
+        ConcurrentHashMap<Short, Int>()
 
     override fun onCreate() {
 
@@ -56,10 +65,54 @@ class MeshService : Service() {
 
     private fun startMesh() {
 
-        bleManager.startScanning { packet ->
+        bleManager.startScanning { packet, rssi ->
+
+            // Signal strength updates on EVERY scan result,
+            // even for duplicate/already-seen packets, so the
+            // UI reflects live distance changes as phones move.
+            handleSignalUpdate(
+                packet.relayId,
+                rssi
+            )
 
             handlePacket(packet)
         }
+    }
+
+    // --------------------------------------------------
+    // HANDLE LIVE SIGNAL UPDATE
+    // --------------------------------------------------
+
+    private fun handleSignalUpdate(
+        nodeId: Short,
+        rssi: Int
+    ) {
+
+        nodeSignalStrength[nodeId] =
+            rssi
+
+        val intent =
+            Intent(
+                MainActivity.ACTION_SIGNAL_UPDATE
+            )
+
+        intent.setPackage(
+            packageName
+        )
+
+        intent.putExtra(
+            "nodeId",
+            nodeId
+        )
+
+        intent.putExtra(
+            "rssi",
+            rssi
+        )
+
+        sendBroadcast(
+            intent
+        )
     }
 
     // --------------------------------------------------

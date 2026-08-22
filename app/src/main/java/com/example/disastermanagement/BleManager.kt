@@ -182,7 +182,7 @@ class BleManager(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun startScanning(
         onPacketReceived:
-            (SosPacket) -> Unit
+            (SosPacket, rssi: Int) -> Unit
     ) {
 
         println(
@@ -237,6 +237,9 @@ class BleManager(private val context: Context) {
 
                     val scanRecord =
                         result.scanRecord
+
+                    val rssi =
+                        result.rssi
 
                     if (scanRecord == null) {
 
@@ -355,11 +358,17 @@ class BleManager(private val context: Context) {
                         )
 
                         println(
+                            "RSSI: " +
+                                    "$rssi dBm"
+                        )
+
+                        println(
                             "================================"
                         )
 
                         onPacketReceived(
-                            packet
+                            packet,
+                            rssi
                         )
                     }
                 }
