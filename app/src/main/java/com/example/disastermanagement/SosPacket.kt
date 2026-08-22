@@ -7,13 +7,13 @@ data class SosPacket(
 
     val messageId: Int,
 
-    // Original person/device that created the SOS
+    // Original SOS creator
     val sourceId: Short,
 
-    // Last device that forwarded this packet
+    // Most recent relay
     val relayId: Short,
 
-    // GPS of the original SOS source
+    // GPS of original SOS creator
     val sourceLatitude: Float,
     val sourceLongitude: Float,
 
@@ -44,7 +44,9 @@ data class SosPacket(
 
     companion object {
 
-        fun fromBytes(data: ByteArray): SosPacket? {
+        fun fromBytes(
+            data: ByteArray
+        ): SosPacket? {
 
             if (data.size < 17) {
                 return null
@@ -52,29 +54,42 @@ data class SosPacket(
 
             return try {
 
-                val buffer = ByteBuffer
-                    .wrap(data)
-                    .order(ByteOrder.BIG_ENDIAN)
+                val buffer =
+                    ByteBuffer
+                        .wrap(data)
+                        .order(ByteOrder.BIG_ENDIAN)
 
-                val messageId = buffer.int
+                val messageId =
+                    buffer.int
 
-                val sourceId = buffer.short
+                val sourceId =
+                    buffer.short
 
-                val relayId = buffer.short
+                val relayId =
+                    buffer.short
 
-                val sourceLatitude = buffer.float
+                val sourceLatitude =
+                    buffer.float
 
-                val sourceLongitude = buffer.float
+                val sourceLongitude =
+                    buffer.float
 
-                val ttl = buffer.get()
+                val ttl =
+                    buffer.get()
 
                 SosPacket(
-                    messageId = messageId,
-                    sourceId = sourceId,
-                    relayId = relayId,
-                    sourceLatitude = sourceLatitude,
-                    sourceLongitude = sourceLongitude,
-                    ttl = ttl
+                    messageId =
+                        messageId,
+                    sourceId =
+                        sourceId,
+                    relayId =
+                        relayId,
+                    sourceLatitude =
+                        sourceLatitude,
+                    sourceLongitude =
+                        sourceLongitude,
+                    ttl =
+                        ttl
                 )
 
             } catch (e: Exception) {

@@ -2,7 +2,10 @@ package com.example.disastermanagement
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -18,10 +21,10 @@ import java.util.concurrent.atomic.AtomicInteger
 class MainActivity : ComponentActivity() {
 
     private lateinit var bleManager: BleManager
+    private lateinit var packetStore: PacketStore
+    private lateinit var locationManager: LocationManager
 
     private lateinit var statusText: TextView
-
-    private lateinit var packetStore: PacketStore
 
     private val messageCounter =
         AtomicInteger(1000)
@@ -30,8 +33,43 @@ class MainActivity : ComponentActivity() {
 
         private const val PERMISSION_REQUEST_CODE = 100
 
-        private const val BLUETOOTH_ENABLE_REQUEST = 101
+        const val ACTION_SOS_RECEIVED =
+            "com.example.disastermanagement.SOS_RECEIVED"
     }
+
+    // --------------------------------------------------
+    // RECEIVE MESSAGES FROM MESH SERVICE
+    // --------------------------------------------------
+
+    private val sosReceiver =
+        object : BroadcastReceiver() {
+
+            override fun onReceive(
+                context: Context?,
+                intent: Intent?
+            ) {
+
+                if (intent?.action != ACTION_SOS_RECEIVED) {
+                    return
+                }
+
+                val message =
+                    intent.getStringExtra("message")
+                        ?: "SOS received"
+
+                runOnUiThread {
+
+                    statusText.text =
+                        message
+
+                    Toast.makeText(
+                        this@MainActivity,
+                        "SOS RECEIVED",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
 
     override fun onCreate(
         savedInstanceState: Bundle?
@@ -39,18 +77,70 @@ class MainActivity : ComponentActivity() {
 
         super.onCreate(savedInstanceState)
 
-        bleManager = BleManager(this)
+        bleManager =
+            BleManager(this)
 
-        packetStore = PacketStore(this)
+        packetStore =
+            PacketStore(this)
+
+        locationManager =
+            LocationManager(this)
 
         createUI()
 
         requestPermissions()
     }
 
+    // --------------------------------------------------
+    // REGISTER RECEIVER
+    // --------------------------------------------------
+
+    override fun onStart() {
+
+        super.onStart()
+
+        val filter =
+            IntentFilter(
+                ACTION_SOS_RECEIVED
+            )
+
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.TIRAMISU
+        ) {
+
+            registerReceiver(
+                sosReceiver,
+                filter,
+                Context.RECEIVER_NOT_EXPORTED
+            )
+
+        } else {
+
+            registerReceiver(
+                sosReceiver,
+                filter
+            )
+        }
+    }
+
+    override fun onStop() {
+
+        unregisterReceiver(
+            sosReceiver
+        )
+
+        super.onStop()
+    }
+
+    // --------------------------------------------------
+    // UI
+    // --------------------------------------------------
+
     private fun createUI() {
 
-        val layout = LinearLayout(this)
+        val layout =
+            LinearLayout(this)
 
         layout.orientation =
             LinearLayout.VERTICAL
@@ -62,42 +152,61 @@ class MainActivity : ComponentActivity() {
             40
         )
 
-        val nodeIdText = TextView(this)
+        val nodeIdText =
+            TextView(this)
 
         nodeIdText.text =
-            "DEVICE NODE ID: ${nodeIdToString(packetStore.getNodeId())}"
+            "DEVICE NODE ID: " +
+                    nodeIdToString(
+                        packetStore.getNodeId()
+                    )
 
         nodeIdText.textSize = 18f
 
-        layout.addView(nodeIdText)
+        layout.addView(
+            nodeIdText
+        )
 
-        statusText = TextView(this)
+        statusText =
+            TextView(this)
 
         statusText.text =
             """
-
-            Mesh SOS
-
-            Status: READY
-
+            MESH SOS
+            
+            STATUS: READY
+            
+            GPS: Waiting
             """.trimIndent()
 
         statusText.textSize = 18f
 
-        layout.addView(statusText)
+        layout.addView(
+            statusText
+        )
 
-        val listenButton =
+        // --------------------------------------------------
+        // START RELAY
+        // --------------------------------------------------
+
+        val relayButton =
             Button(this)
 
-        listenButton.text =
+        relayButton.text =
             "START MESH RELAY"
 
-        listenButton.setOnClickListener {
+        relayButton.setOnClickListener {
 
             startMeshService()
         }
 
-        layout.addView(listenButton)
+        layout.addView(
+            relayButton
+        )
+
+        // --------------------------------------------------
+        // SEND SOS
+        // --------------------------------------------------
 
         val sosButton =
             Button(this)
@@ -110,7 +219,13 @@ class MainActivity : ComponentActivity() {
             sendSOS()
         }
 
-        layout.addView(sosButton)
+        layout.addView(
+            sosButton
+        )
+
+        // --------------------------------------------------
+        // STOP MESH
+        // --------------------------------------------------
 
         val stopButton =
             Button(this)
@@ -129,16 +244,25 @@ class MainActivity : ComponentActivity() {
 
             statusText.text =
                 """
-                Mesh SOS
-
-                Status: MESH STOPPED
+                MESH SOS
+                
+                STATUS:
+                MESH STOPPED
                 """.trimIndent()
         }
 
-        layout.addView(stopButton)
+        layout.addView(
+            stopButton
+        )
 
-        setContentView(layout)
+        setContentView(
+            layout
+        )
     }
+
+    // --------------------------------------------------
+    // START MESH SERVICE
+    // --------------------------------------------------
 
     private fun startMeshService() {
 
@@ -148,29 +272,46 @@ class MainActivity : ComponentActivity() {
                 MeshService::class.java
             )
 
-        if (Build.VERSION.SDK_INT >=
+        if (
+            Build.VERSION.SDK_INT >=
             Build.VERSION_CODES.O
         ) {
 
-            startForegroundService(intent)
+            startForegroundService(
+                intent
+            )
 
         } else {
 
-            startService(intent)
+            startService(
+                intent
+            )
         }
 
         statusText.text =
             """
-            Mesh SOS
-
-            Status: RELAY ACTIVE
-
-            Device:
-            ${nodeIdToString(packetStore.getNodeId())}
-
-            Listening for SOS...
+            MESH SOS
+            
+            STATUS:
+            RELAY ACTIVE
+            
+            DEVICE:
+            ${
+                nodeIdToString(
+                    packetStore.getNodeId()
+                )
+            }
+            
+            GPS:
+            Obtaining...
+            
+            LISTENING FOR SOS...
             """.trimIndent()
     }
+
+    // --------------------------------------------------
+    // SEND SOS
+    // --------------------------------------------------
 
     private fun sendSOS() {
 
@@ -178,87 +319,131 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        statusText.text =
+            """
+            MESH SOS
+            
+            STATUS:
+            GETTING GPS...
+            
+            Please wait...
+            """.trimIndent()
+
+        locationManager.getCurrentLocation(
+
+            onLocationReceived = { gps ->
+
+                runOnUiThread {
+
+                    transmitSOS(gps)
+                }
+            },
+
+            onError = { error ->
+
+                runOnUiThread {
+
+                    statusText.text =
+                        """
+                        MESH SOS
+                        
+                        STATUS:
+                        GPS ERROR
+                        
+                        $error
+                        """.trimIndent()
+
+                    Toast.makeText(
+                        this,
+                        error,
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        )
+    }
+
+    // --------------------------------------------------
+    // TRANSMIT SOS
+    // --------------------------------------------------
+
+    private fun transmitSOS(
+        gps: GpsLocation
+    ) {
+
         val messageId =
             messageCounter.incrementAndGet()
 
         val sourceId =
             packetStore.getNodeId()
 
-        /*
-         * Temporary GPS coordinates.
-         *
-         * We will replace these with
-         * real GPS later.
-         */
-
-        val latitude =
-            26.9124f
-
-        val longitude =
-            75.7873f
-
         val packet =
             SosPacket(
 
-                messageId = messageId,
+                messageId =
+                    messageId,
 
-                sourceId = sourceId,
+                sourceId =
+                    sourceId,
 
-                // Sender is the first relay
-                relayId = sourceId,
+                relayId =
+                    sourceId,
 
-                sourceLatitude = latitude,
+                sourceLatitude =
+                    gps.latitude,
 
-                sourceLongitude = longitude,
+                sourceLongitude =
+                    gps.longitude,
 
-                ttl = 5
+                ttl =
+                    5
             )
 
-        bleManager.advertise(packet)
+        bleManager.advertise(
+            packet
+        )
 
         statusText.text =
             """
             MESH SOS
-
-            STATUS: SOS TRANSMITTING
-
+            
+            STATUS:
+            SOS TRANSMITTING
+            
             SOURCE DEVICE:
-            ${nodeIdToString(sourceId)}
-
-            DESTINATION:
-            ANY NEARBY RELAY
-
+            ${
+                nodeIdToString(
+                    sourceId
+                )
+            }
+            
             SOURCE LATITUDE:
-            $latitude
-
+            ${gps.latitude}
+            
             SOURCE LONGITUDE:
-            $longitude
-
+            ${gps.longitude}
+            
             TTL:
             ${packet.ttl}
-
+            
             MESSAGE ID:
             $messageId
             """.trimIndent()
-
-        Toast.makeText(
-            this,
-            "SOS transmission started",
-            Toast.LENGTH_SHORT
-        ).show()
     }
 
-    private fun nodeIdToString(
-        id: Short
-    ): String {
-
-        return (id.toInt() and 0xFFFF)
-            .toString()
-    }
+    // --------------------------------------------------
+    // BLUETOOTH
+    // --------------------------------------------------
 
     private fun checkBluetooth(): Boolean {
 
-        if (!bleManager.isBluetoothAvailable()) {
+        val adapter =
+            BluetoothAdapter.getDefaultAdapter()
+
+        if (
+            adapter == null ||
+            !adapter.isEnabled
+        ) {
 
             Toast.makeText(
                 this,
@@ -272,12 +457,17 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
+    // --------------------------------------------------
+    // PERMISSIONS
+    // --------------------------------------------------
+
     private fun requestPermissions() {
 
         val permissions =
             mutableListOf<String>()
 
-        if (Build.VERSION.SDK_INT >=
+        if (
+            Build.VERSION.SDK_INT >=
             Build.VERSION_CODES.S
         ) {
 
@@ -294,7 +484,8 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        if (Build.VERSION.SDK_INT >=
+        if (
+            Build.VERSION.SDK_INT >=
             Build.VERSION_CODES.TIRAMISU
         ) {
 
@@ -307,7 +498,11 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.ACCESS_FINE_LOCATION
         )
 
-        val missingPermissions =
+        permissions.add(
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+
+        val missing =
             permissions.filter {
 
                 ContextCompat.checkSelfPermission(
@@ -316,14 +511,23 @@ class MainActivity : ComponentActivity() {
                 ) != PackageManager.PERMISSION_GRANTED
             }
 
-        if (missingPermissions.isNotEmpty()) {
+        if (missing.isNotEmpty()) {
 
             ActivityCompat.requestPermissions(
                 this,
-                missingPermissions.toTypedArray(),
+                missing.toTypedArray(),
                 PERMISSION_REQUEST_CODE
             )
         }
+    }
+
+    private fun nodeIdToString(
+        id: Short
+    ): String {
+
+        return (
+                id.toInt() and 0xFFFF
+                ).toString()
     }
 
     override fun onDestroy() {

@@ -6,13 +6,20 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MeshService : Service() {
 
     private lateinit var bleManager: BleManager
 
     private lateinit var packetStore: PacketStore
+
+    private lateinit var locationManager: LocationManager
 
     private val serviceScope =
         CoroutineScope(
@@ -30,6 +37,9 @@ class MeshService : Service() {
         packetStore =
             PacketStore(this)
 
+        locationManager =
+            LocationManager(this)
+
         createNotificationChannel()
 
         startForeground(
@@ -40,6 +50,10 @@ class MeshService : Service() {
         startMesh()
     }
 
+    // --------------------------------------------------
+    // START MESH
+    // --------------------------------------------------
+
     private fun startMesh() {
 
         bleManager.startScanning { packet ->
@@ -48,6 +62,10 @@ class MeshService : Service() {
         }
     }
 
+    // --------------------------------------------------
+    // HANDLE RECEIVED SOS
+    // --------------------------------------------------
+
     private fun handlePacket(
         packet: SosPacket
     ) {
@@ -55,9 +73,9 @@ class MeshService : Service() {
         val myNodeId =
             packetStore.getNodeId()
 
-        /*
-         * Prevent duplicate forwarding
-         */
+        // ----------------------------------------------
+        // CHECK DUPLICATE
+        // ----------------------------------------------
 
         if (
             packetStore.hasSeen(
@@ -65,31 +83,213 @@ class MeshService : Service() {
             )
         ) {
 
-            return
-        }
-
-        packetStore.markSeen(
-            packet.messageId
-        )
-
-        /*
-         * If TTL has expired,
-         * don't forward.
-         */
-
-        if (packet.ttl.toInt() <= 0) {
-
-            updateNotification(
-                "SOS received - TTL expired"
+            println(
+                "MESH: Duplicate packet ignored: " +
+                        packet.messageId
             )
 
             return
         }
 
-        /*
-         * The phone receiving this packet
-         * becomes the current relay.
-         */
+        // ----------------------------------------------
+        // MARK PACKET AS SEEN
+        // ----------------------------------------------
+
+        packetStore.markSeen(
+            packet.messageId
+        )
+
+        // ----------------------------------------------
+        // SHOW SOS ON PHONE UI
+        // ----------------------------------------------
+
+        sendSosToUI(
+            """
+            ╔══════════════════════════╗
+                   🚨 SOS RECEIVED
+            ╚══════════════════════════╝
+            
+            MESSAGE ID:
+            ${packet.messageId}
+            
+            SOURCE DEVICE:
+            ${nodeIdToString(packet.sourceId)}
+            
+            SOURCE GPS:
+            ${packet.sourceLatitude},
+            ${packet.sourceLongitude}
+            
+            TTL:
+            ${packet.ttl}
+            
+            STATUS:
+            PROCESSING...
+            """.trimIndent()
+        )
+
+        // ----------------------------------------------
+        // CHECK TTL
+        // ----------------------------------------------
+
+        if (
+            packet.ttl.toInt() <= 0
+        ) {
+
+            updateNotification(
+                """
+                SOS RECEIVED
+                
+                TTL EXPIRED
+                
+                Source:
+                ${
+                    nodeIdToString(
+                        packet.sourceId
+                    )
+                }
+                """.trimIndent()
+            )
+
+            sendSosToUI(
+                """
+                ╔══════════════════════════╗
+                       🚨 SOS RECEIVED
+                ╚══════════════════════════╝
+                
+                SOURCE DEVICE:
+                ${
+                    nodeIdToString(
+                        packet.sourceId
+                    )
+                }
+                
+                SOURCE GPS:
+                ${packet.sourceLatitude},
+                ${packet.sourceLongitude}
+                
+                TTL:
+                EXPIRED
+                
+                STATUS:
+                NOT FORWARDED
+                """.trimIndent()
+            )
+
+            return
+        }
+
+        // ----------------------------------------------
+        // GET CURRENT RELAY GPS
+        // ----------------------------------------------
+
+        updateNotification(
+            """
+            SOS RECEIVED
+            
+            Getting relay GPS...
+            
+            Source:
+            ${
+                nodeIdToString(
+                    packet.sourceId
+                )
+            }
+            
+            Source GPS:
+            ${packet.sourceLatitude},
+            ${packet.sourceLongitude}
+            """.trimIndent()
+        )
+
+        sendSosToUI(
+            """
+            ╔══════════════════════════╗
+                   🚨 SOS RECEIVED
+            ╚══════════════════════════╝
+            
+            SOURCE DEVICE:
+            ${
+                nodeIdToString(
+                    packet.sourceId
+                )
+            }
+            
+            SOURCE GPS:
+            ${packet.sourceLatitude},
+            ${packet.sourceLongitude}
+            
+            STATUS:
+            GETTING CURRENT GPS...
+            """.trimIndent()
+        )
+
+        locationManager.getCurrentLocation(
+
+            onLocationReceived = { gps ->
+
+                serviceScope.launch {
+
+                    relayPacket(
+                        packet,
+                        gps,
+                        myNodeId
+                    )
+                }
+            },
+
+            onError = { error ->
+
+                updateNotification(
+                    """
+                    SOS RECEIVED
+                    
+                    GPS ERROR
+                    
+                    $error
+                    
+                    Packet will NOT
+                    be forwarded.
+                    """.trimIndent()
+                )
+
+                sendSosToUI(
+                    """
+                    ╔══════════════════════════╗
+                           🚨 SOS RECEIVED
+                    ╚══════════════════════════╝
+                    
+                    SOURCE DEVICE:
+                    ${
+                        nodeIdToString(
+                            packet.sourceId
+                        )
+                    }
+                    
+                    SOURCE GPS:
+                    ${packet.sourceLatitude},
+                    ${packet.sourceLongitude}
+                    
+                    STATUS:
+                    GPS ERROR
+                    
+                    $error
+                    
+                    NOT FORWARDED
+                    """.trimIndent()
+                )
+            }
+        )
+    }
+
+    // --------------------------------------------------
+    // RELAY PACKET
+    // --------------------------------------------------
+
+    private fun relayPacket(
+        packet: SosPacket,
+        gps: GpsLocation,
+        myNodeId: Short
+    ) {
 
         val newTtl =
             (
@@ -99,68 +299,137 @@ class MeshService : Service() {
         val forwardedPacket =
             packet.copy(
 
-                /*
-                 * Source remains unchanged.
-                 */
+                // Original source remains unchanged
                 sourceId =
                     packet.sourceId,
 
-                /*
-                 * Current phone becomes
-                 * the new relay.
-                 */
+                // This phone becomes the new relay
                 relayId =
                     myNodeId,
 
+                // Original source GPS remains unchanged
+                sourceLatitude =
+                    packet.sourceLatitude,
+
+                sourceLongitude =
+                    packet.sourceLongitude,
+
+                // TTL decreases
                 ttl =
                     newTtl
             )
 
-        /*
-         * Show RELAYING information.
-         */
+        // ----------------------------------------------
+        // SHOW FORWARDING ON PHONE UI
+        // ----------------------------------------------
 
-        updateNotification(
+        sendSosToUI(
             """
-            FORWARDING SOS
-
-            Source:
-            ${nodeIdToString(packet.sourceId)}
-
-            Previous Relay:
-            ${nodeIdToString(packet.relayId)}
-
-            Destination:
-            ${nodeIdToString(myNodeId)}
-
-            Source Latitude:
-            ${packet.sourceLatitude}
-
-            Source Longitude:
+            ╔══════════════════════════╗
+                   🚨 SOS RELAY
+            ╚══════════════════════════╝
+            
+            STATUS:
+            FORWARDING
+            
+            MESSAGE ID:
+            ${packet.messageId}
+            
+            SOURCE DEVICE:
+            ${
+                nodeIdToString(
+                    packet.sourceId
+                )
+            }
+            
+            PREVIOUS RELAY:
+            ${
+                nodeIdToString(
+                    packet.relayId
+                )
+            }
+            
+            CURRENT RELAY:
+            ${
+                nodeIdToString(
+                    myNodeId
+                )
+            }
+            
+            SOURCE GPS:
+            ${packet.sourceLatitude},
             ${packet.sourceLongitude}
-
-            Destination GPS:
-            This phone's GPS
-
+            
+            CURRENT GPS:
+            ${gps.latitude},
+            ${gps.longitude}
+            
             TTL:
             ${packet.ttl} → $newTtl
-
-            Message:
-            ${packet.messageId}
             """.trimIndent()
         )
 
-        /*
-         * Forward the packet.
-         */
+        // ----------------------------------------------
+        // UPDATE NOTIFICATION
+        // ----------------------------------------------
+
+        updateNotification(
+            """
+            ╔══════════════════════╗
+                  SOS RELAY
+            ╚══════════════════════╝
+            
+            STATUS:
+            FORWARDING
+            
+            MESSAGE:
+            ${packet.messageId}
+            
+            SOURCE DEVICE:
+            ${
+                nodeIdToString(
+                    packet.sourceId
+                )
+            }
+            
+            PREVIOUS RELAY:
+            ${
+                nodeIdToString(
+                    packet.relayId
+                )
+            }
+            
+            CURRENT RELAY:
+            ${
+                nodeIdToString(
+                    myNodeId
+                )
+            }
+            
+            SOURCE GPS:
+            ${packet.sourceLatitude},
+            ${packet.sourceLongitude}
+            
+            CURRENT GPS:
+            ${gps.latitude},
+            ${gps.longitude}
+            
+            TTL:
+            ${packet.ttl} → $newTtl
+            """.trimIndent()
+        )
+
+        // ----------------------------------------------
+        // FORWARD SOS
+        // ----------------------------------------------
 
         bleManager.advertise(
             forwardedPacket
         )
 
-        /*
-         * Continue forwarding for 30 seconds.
-         */
+        // ----------------------------------------------
+        // STOP FORWARDING AFTER 30 SECONDS
+        // ----------------------------------------------
 
         serviceScope.launch {
 
@@ -169,18 +438,78 @@ class MeshService : Service() {
             bleManager.stopAdvertising()
 
             updateNotification(
-                "RELAY READY - Listening..."
+                """
+                RELAY READY
+                
+                Listening for SOS...
+                """.trimIndent()
+            )
+
+            sendSosToUI(
+                """
+                MESH SOS
+                
+                STATUS:
+                RELAY READY
+                
+                Listening for SOS...
+                """.trimIndent()
             )
         }
     }
+
+    // --------------------------------------------------
+    // SEND MESSAGE TO MAIN ACTIVITY
+    // --------------------------------------------------
+
+    private fun sendSosToUI(
+        message: String
+    ) {
+
+        val intent =
+            Intent(
+                MainActivity.ACTION_SOS_RECEIVED
+            )
+
+        /*
+         * Keep the broadcast inside
+         * our own application.
+         */
+
+        intent.setPackage(
+            packageName
+        )
+
+        intent.putExtra(
+            "message",
+            message
+        )
+
+        sendBroadcast(
+            intent
+        )
+
+        println(
+            "MESH UI UPDATE:\n$message"
+        )
+    }
+
+    // --------------------------------------------------
+    // NODE ID
+    // --------------------------------------------------
 
     private fun nodeIdToString(
         id: Short
     ): String {
 
-        return (id.toInt() and 0xFFFF)
-            .toString()
+        return (
+                id.toInt() and 0xFFFF
+                ).toString()
     }
+
+    // --------------------------------------------------
+    // NOTIFICATION
+    // --------------------------------------------------
 
     private fun updateNotification(
         message: String
@@ -203,6 +532,10 @@ class MeshService : Service() {
         )
     }
 
+    // --------------------------------------------------
+    // NOTIFICATION CHANNEL
+    // --------------------------------------------------
+
     private fun createNotificationChannel() {
 
         val channel =
@@ -221,6 +554,10 @@ class MeshService : Service() {
             channel
         )
     }
+
+    // --------------------------------------------------
+    // CREATE NOTIFICATION
+    // --------------------------------------------------
 
     private fun createNotification(
         message: String =
@@ -246,6 +583,10 @@ class MeshService : Service() {
             .build()
     }
 
+    // --------------------------------------------------
+    // SERVICE DESTROYED
+    // --------------------------------------------------
+
     override fun onDestroy() {
 
         serviceScope.cancel()
@@ -256,6 +597,10 @@ class MeshService : Service() {
 
         super.onDestroy()
     }
+
+    // --------------------------------------------------
+    // BIND
+    // --------------------------------------------------
 
     override fun onBind(
         intent: Intent?
